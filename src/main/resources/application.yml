@@ -1,0 +1,78 @@
+spring:
+  application:
+    name: pop-backend
+
+  main:
+    banner-mode: "off" # Para evitar el glitch visual en la terminal
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/pop}
+    username: ${DB_USER:pop_user}
+    password: ${DB_PASSWORD:pop_pass}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate.jdbc.time_zone: America/Bogota
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 15MB
+
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USER:}
+    password: ${MAIL_PASSWORD:}
+
+server:
+  port: ${PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+
+pop:
+  jwt:
+    secret: ${JWT_SECRET:cambiar-en-produccion-minimo-32-caracteres-aleatorios}
+    expiration-ms: ${JWT_EXPIRATION:3600000}
+    refresh-expiration-ms: ${JWT_REFRESH:604800000}
+  cors:
+    allowed-origins: ${CORS_ORIGINS:http://localhost:5173}
+  storage:
+    type: ${STORAGE_TYPE:local}
+    local-path: ${STORAGE_PATH:./uploads}
+    max-image-size-kb: 5120
+    allowed-mime-types:
+      - image/jpeg
+      - image/png
+      - image/webp
+  seguridad:
+    max-intentos-login: 5
+    bloqueo-minutos: 15
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+  health:
+    mail:
+      enabled: false
+
+logging:
+  level:
+    edu.universidad.pop: DEBUG
+    org.springframework.security: DEBUG
