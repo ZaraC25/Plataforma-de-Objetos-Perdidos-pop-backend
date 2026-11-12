@@ -12,6 +12,7 @@ import java.util.List;
 @Configuration
 public class CorsConfig {
 
+    // Lee la variable de entorno CORS_ORIGINS. Si no existe, usa localhost por defecto.
     @Value("${pop.cors.allowed-origins:http://localhost:5173}")
     private List<String> allowedOrigins;
 
@@ -19,14 +20,14 @@ public class CorsConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowedOrigins(allowedOrigins);
+        // Permitir todos los métodos necesarios, incluido OPTIONS
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept", "X-Requested-With"));
-        config.setExposedHeaders(List.of("Location"));
+        config.setAllowedHeaders(List.of("*")); // Permitir todos los headers (incluye Authorization)
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/api/**", config);
+        source.registerCorsConfiguration("/**", config); // Aplicar a todas las rutas
         return source;
     }
 }

@@ -41,9 +41,10 @@ public class SecurityConfig {
                 .contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'none'"))
             )
             .authorizeHttpRequests(auth -> auth
-                // Permitir la petición preflight de CORS
+                // 1. PERMITIR SIEMPRE LAS PETICIONES PREFLIGHT DE CORS (PRIMERA REGLA)
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 
+                // 2. RUTAS PÚBLICAS
                 .requestMatchers(
                         "/api/auth/**",
                         "/api/docs/**",
@@ -54,6 +55,8 @@ public class SecurityConfig {
                         "/actuator/health"
                 ).permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/objetos", "/api/objetos/**").permitAll()
+                
+                // 3. RUTAS PROTEGIDAS
                 .requestMatchers("/api/admin/**").hasRole("ADMINISTRADOR")
                 .requestMatchers("/api/encargado/**")
                     .hasAnyRole("ENCARGADO_OBJETOS_PERDIDOS", "ADMINISTRADOR")
