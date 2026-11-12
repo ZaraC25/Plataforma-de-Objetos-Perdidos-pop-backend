@@ -19,14 +19,6 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfigurationSource;
 
-/**
- * RNF-01 / RNF-02 — Seguridad stateless con JWT.
- * Regla de negocio #3 — Permisos validados en el servidor.
- *
- * Nota: JwtAuthenticationFilter y CorsConfigurationSource se inyectan como
- * parámetros del método filterChain (no como campos del constructor) para
- * evitar una referencia circular con el bean UserDetailsService definido aquí.
- */
 @Configuration
 @EnableMethodSecurity(prePostEnabled = true)
 @RequiredArgsConstructor
@@ -49,6 +41,9 @@ public class SecurityConfig {
                 .contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'none'"))
             )
             .authorizeHttpRequests(auth -> auth
+                // Permitir la petición preflight de CORS
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                
                 .requestMatchers(
                         "/api/auth/**",
                         "/api/docs/**",
