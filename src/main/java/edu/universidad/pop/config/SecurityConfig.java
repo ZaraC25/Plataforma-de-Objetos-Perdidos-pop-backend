@@ -3,12 +3,11 @@ package edu.universidad.pop.config;
 import edu.universidad.pop.modules.auth.security.UsuarioPrincipal;
 import edu.universidad.pop.modules.usuario.repository.UsuarioRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.Ordered;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -20,8 +19,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-import org.springframework.web.filter.CorsFilter;
 
 import java.util.List;
 
@@ -31,18 +30,16 @@ import java.util.List;
 public class SecurityConfig {
 
     private final UsuarioRepository usuarioRepository;
+    private final JwtAuthenticationFilter jwtAuthenticationFilter;
 
     @Bean
-    public SecurityFilterChain filterChain(
-            HttpSecurity http,
-            JwtAuthenticationFilter jwtAuthenticationFilter) throws Exception {
-
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
             .csrf(csrf -> csrf.disable())
-            .cors(cors -> cors.disable()) // Desactivamos el CORS de Security porque usaremos el FilterRegistrationBean
+            .cors(Customizer.withDefaults()) // Usa el bean de abajo automáticamente
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll() // Permite el preflight
                 .requestMatchers("/api/auth/**", "/actuator/health").permitAll()
                 .requestMatchers(HttpMethod.GET, "/api/objetos", "/api/objetos/**").permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMINISTRADOR")
@@ -54,26 +51,20 @@ public class SecurityConfig {
         return http.build();
     }
 
-    // --- FILTRO CORS CON MÁXIMA PRIORIDAD (A PRUEBA DE BALAS) ---
     @Bean
-    public FilterRegistrationBean<CorsFilter> corsFilterRegistration() {
+    public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowCredentials(true);
-        // Forzamos las URLs (puedes agregar más si las necesitas)
         config.setAllowedOrigins(List.of(
                 "https://plataformaobjetosperdidos.netlify.app",
                 "http://localhost:5173"
         ));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        config.setMaxAge(3600L); // Caché de 1 hora
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
-
-        FilterRegistrationBean<CorsFilter> bean = new FilterRegistrationBean<>(new CorsFilter(source));
-        bean.setOrder(Ordered.HIGHEST_PRECEDENCE); // ESTO ES LO QUE FUERZA A QUE SE EJECUTE PRIMERO
-        return bean;
+        return source;
     }
 
     @Bean
