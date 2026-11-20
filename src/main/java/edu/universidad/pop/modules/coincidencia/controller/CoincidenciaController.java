@@ -11,6 +11,7 @@ import edu.universidad.pop.modules.reporte.domain.ReportePerdida;
 import edu.universidad.pop.modules.reporte.repository.ReportePerdidaRepository;
 import edu.universidad.pop.modules.usuario.domain.Usuario;
 import edu.universidad.pop.modules.usuario.repository.UsuarioRepository;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
