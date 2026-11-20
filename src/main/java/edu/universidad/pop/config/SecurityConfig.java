@@ -55,7 +55,7 @@ public class SecurityConfig {
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowCredentials(true);
         config.setAllowedOrigins(List.of(
-                "https://plataformaobjetosperdidos.netlify.app",
+                "https://plataformadeobjetosperdidos.netlify.app",
                 "http://localhost:5173"
         ));
         config.setAllowedHeaders(List.of("*"));
