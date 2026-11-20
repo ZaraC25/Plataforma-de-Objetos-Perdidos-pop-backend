@@ -14,8 +14,10 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -73,33 +75,74 @@ public class IaMatchingService {
                 .put("responseMimeType", "application/json")
                 .put("temperature", 0.1);
 
-        String modelo = modeloActivo != null ? modeloActivo : model;
-        String response;
-        try {
-            response = generar(modelo, requestBody.toString());
-        } catch (WebClientResponseException e) {
-            if (e.getStatusCode().value() != 404) {
-                throw errorGemini(e, modelo);
-            }
-            // El modelo fue retirado: preguntamos a Google cuáles hay y usamos uno disponible
-            log.warn("El modelo '{}' no está disponible (404). Buscando otro modelo...", modelo);
-            String alterno = descubrirModelo(modelo);
+        String body = requestBody.toString();
+        Set<String> probados = new LinkedHashSet<>();
+        List<String> pendientes = new ArrayList<>();
+        pendientes.add(modeloActivo != null ? modeloActivo : model);
+        boolean listaConsultada = false;
+        WebClientResponseException ultimoError = null;
+
+        // Se prueban hasta MAX_MODELOS modelos; en cada uno se reintenta si Google está saturado (429/5xx)
+        while (!pendientes.isEmpty() && probados.size() < MAX_MODELOS) {
+            String modelo = pendientes.remove(0);
+            if (!probados.add(modelo)) continue;
             try {
-                response = generar(alterno, requestBody.toString());
-                modeloActivo = alterno; // se recuerda para las siguientes peticiones
-                log.info("Usando el modelo de Gemini '{}'", alterno);
-            } catch (WebClientResponseException e2) {
-                throw errorGemini(e2, alterno);
-            } catch (Exception e2) {
-                log.error("Error llamando a Gemini con el modelo '{}'", alterno, e2);
-                throw new IaNoDisponibleException("No se pudo contactar el servicio de IA. Intenta de nuevo.");
+                String response = generarConReintentos(modelo, body);
+                if (!modelo.equals(modeloActivo)) {
+                    modeloActivo = modelo; // se recuerda para las siguientes peticiones
+                    log.info("Usando el modelo de Gemini '{}'", modelo);
+                }
+                return parsearRespuesta(response);
+            } catch (WebClientResponseException e) {
+                ultimoError = e;
+                int status = e.getStatusCode().value();
+                log.warn("Gemini respondió {} con el modelo '{}': {}", status, modelo, e.getResponseBodyAsString());
+                if (status != 404 && !esTransitorio(status)) {
+                    throw new IaNoDisponibleException(mensajeParaUsuario(e, modelo)); // key inválida, etc.
+                }
+                if (!listaConsultada) { // modelo retirado o saturado: probamos otros modelos de la key
+                    listaConsultada = true;
+                    for (String alterno : listarModelos()) {
+                        if (!probados.contains(alterno) && !pendientes.contains(alterno)) pendientes.add(alterno);
+                    }
+                }
+            } catch (IaNoDisponibleException e) {
+                throw e;
+            } catch (Exception e) {
+                log.error("Error llamando a Gemini con el modelo '{}'", modelo, e);
             }
-        } catch (Exception e) {
-            log.error("Error llamando a Gemini con el modelo '{}'", modelo, e);
-            throw new IaNoDisponibleException("No se pudo contactar el servicio de IA. Intenta de nuevo.");
         }
 
-        return parsearRespuesta(response);
+        log.error("Ningún modelo de Gemini respondió. Probados: {}", probados);
+        throw new IaNoDisponibleException(ultimoError != null
+                ? mensajeParaUsuario(ultimoError, String.join(", ", probados))
+                : "No se pudo contactar el servicio de IA. Intenta de nuevo.");
+    }
+
+    private static final int MAX_MODELOS = 3;
+    private static final long[] ESPERAS_MS = {2_000, 5_000};
+
+    private static boolean esTransitorio(int status) {
+        return status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
+    }
+
+    /** Llama a Gemini y, si está saturado (429/5xx), espera y reintenta antes de rendirse. */
+    private String generarConReintentos(String modelo, String body) {
+        for (int intento = 0; ; intento++) {
+            try {
+                return generar(modelo, body);
+            } catch (WebClientResponseException e) {
+                if (!esTransitorio(e.getStatusCode().value()) || intento >= ESPERAS_MS.length) throw e;
+                log.info("Gemini saturado ({}) con '{}', reintento {} en {} ms",
+                        e.getStatusCode().value(), modelo, intento + 1, ESPERAS_MS[intento]);
+                try {
+                    Thread.sleep(ESPERAS_MS[intento]);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
     }
 
     private String generar(String modelo, String body) {
@@ -110,20 +153,14 @@ public class IaMatchingService {
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
-                .block(Duration.ofSeconds(60));
-    }
-
-    private IaNoDisponibleException errorGemini(WebClientResponseException e, String modelo) {
-        log.error("Gemini respondió {} con el modelo '{}': {}",
-                e.getStatusCode(), modelo, e.getResponseBodyAsString());
-        return new IaNoDisponibleException(mensajeParaUsuario(e, modelo));
+                .block(Duration.ofSeconds(30));
     }
 
     /**
-     * Consulta la lista de modelos que la API key puede usar y elige el mejor "flash"
-     * de texto: prefiere estables sobre preview/experimental, no-lite y la versión más alta.
+     * Lista los modelos "flash" de texto que la API key puede usar, ordenados del mejor al peor:
+     * prefiere estables sobre preview/experimental, no-lite y la versión más alta.
      */
-    private String descubrirModelo(String descartado) {
+    private List<String> listarModelos() {
         List<String> candidatos = new ArrayList<>();
         try {
             String lista = webClient.get()
@@ -139,23 +176,17 @@ public class IaMatchingService {
                 }
                 String nombre = m.path("name").asText("").replaceFirst("^models/", "");
                 if (generaTexto && nombre.startsWith("gemini") && nombre.contains("flash")
-                        && !nombre.equals(descartado)
                         && !nombre.matches(".*(image|tts|audio|live|embedding|vision|thinking).*")) {
                     candidatos.add(nombre);
                 }
             }
         } catch (Exception e) {
             log.error("No se pudo obtener la lista de modelos de Gemini", e);
-            throw new IaNoDisponibleException("El modelo de IA '" + descartado
-                    + "' no está disponible y no se pudo consultar la lista de modelos.");
-        }
-        log.info("Modelos flash disponibles para esta API key: {}", candidatos);
-        if (candidatos.isEmpty()) {
-            throw new IaNoDisponibleException("La API key no tiene acceso a ningún modelo Gemini Flash. "
-                    + "Configura uno en GEMINI_MODEL.");
+            return List.of();
         }
         candidatos.sort(Comparator.comparingInt(IaMatchingService::puntaje).reversed());
-        return candidatos.get(0);
+        log.info("Modelos flash disponibles para esta API key: {}", candidatos);
+        return candidatos;
     }
 
     private static int puntaje(String nombre) {
@@ -212,8 +243,9 @@ public class IaMatchingService {
                     ? "La API key de Gemini configurada en el servidor no es válida."
                     : "Gemini rechazó la petición (400). Revisa los logs del servidor.";
             case 401, 403 -> "La API key de Gemini no tiene permiso (¿API deshabilitada o key restringida?).";
-            case 404 -> "El modelo de IA '" + model + "' no está disponible. Configura otro en GEMINI_MODEL.";
-            case 429 -> "Se alcanzó el límite de uso de Gemini. Espera un minuto e intenta de nuevo.";
+            case 404 -> "Ningún modelo de Gemini disponible (" + model + "). Configura otro en GEMINI_MODEL.";
+            case 429 -> "Se alcanzó el límite gratuito de Gemini. Espera un minuto e intenta de nuevo.";
+            case 500, 502, 503, 504 -> "Gemini está saturado en este momento. Intenta de nuevo en unos minutos.";
             default -> "El servicio de IA no está disponible en este momento (" + e.getStatusCode().value() + ").";
         };
     }

@@ -3,7 +3,9 @@ package edu.universidad.pop.modules.coincidencia.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.universidad.pop.common.dto.ApiResponse;
 import edu.universidad.pop.modules.coincidencia.dto.CoincidenciaDTO;
+import edu.universidad.pop.common.exception.IaNoDisponibleException;
 import edu.universidad.pop.modules.coincidencia.service.ClaudeMatchingService;
+import edu.universidad.pop.modules.coincidencia.service.CoincidenciaLocalService;
 import edu.universidad.pop.modules.coincidencia.service.IaMatchingService;
 import edu.universidad.pop.modules.objeto.domain.Objeto;
 import edu.universidad.pop.modules.objeto.repository.ObjetoRepository;
@@ -31,6 +33,7 @@ public class CoincidenciaController {
 
     private final IaMatchingService iaService;
     private final ClaudeMatchingService claudeService;
+    private final CoincidenciaLocalService localService;
     private final ObjetoRepository objetoRepository;
     private final ReportePerdidaRepository reporteRepository;
     private final UsuarioRepository usuarioRepository;
@@ -59,9 +62,7 @@ public class CoincidenciaController {
                 .filter(o -> o.getEstado().name().equals("DISPONIBLE_PARA_RECLAMACION"))
                 .collect(Collectors.toList());
 
-        return ResponseEntity.ok(ApiResponse.ok(
-                analizarCoincidencias(misReportes, objetosDisponibles)
-        ));
+        return ResponseEntity.ok(analizarCoincidencias(misReportes, objetosDisponibles));
     }
 
     /**
@@ -81,17 +82,19 @@ public class CoincidenciaController {
                 .filter(o -> o.getEstado().name().equals("DISPONIBLE_PARA_RECLAMACION"))
                 .collect(Collectors.toList());
 
-        return ResponseEntity.ok(ApiResponse.ok(
-                analizarCoincidencias(reportes, objetosDisponibles)
-        ));
+        return ResponseEntity.ok(analizarCoincidencias(reportes, objetosDisponibles));
     }
 
     // ---------- helpers ----------
 
-    private List<CoincidenciaDTO> analizarCoincidencias(
+    /**
+     * Analiza con IA y, si la IA no responde, usa el respaldo local por palabras clave.
+     * En ese caso el campo "message" de la respuesta avisa que el resultado no viene de la IA.
+     */
+    private ApiResponse<List<CoincidenciaDTO>> analizarCoincidencias(
             List<ReportePerdida> reportes, List<Objeto> objetos) {
 
-        if (reportes.isEmpty() || objetos.isEmpty()) return List.of();
+        if (reportes.isEmpty() || objetos.isEmpty()) return ApiResponse.ok(List.of());
 
         // Mapa para lookup rápido por ID
         Map<Long, Objeto> mapaObjetos = objetos.stream()
@@ -127,10 +130,19 @@ public class CoincidenciaController {
         }
 
         // Una sola llamada a la IA para todos los reportes: Claude si ANTHROPIC_API_KEY está configurada, si no Gemini
-        Map<Long, List<Long>> coincidencias = claudeService.estaConfigurado()
-                ? claudeService.analizarCoincidencias(reportesJson, objetosJson)
-                : iaService.analizarCoincidencias(reportesJson, objetosJson);
-        log.info("IA devolvió coincidencias para {} de {} reportes", coincidencias.size(), reportes.size());
+        Map<Long, List<Long>> coincidencias;
+        String aviso = null;
+        try {
+            coincidencias = claudeService.estaConfigurado()
+                    ? claudeService.analizarCoincidencias(reportesJson, objetosJson)
+                    : iaService.analizarCoincidencias(reportesJson, objetosJson);
+            log.info("IA devolvió coincidencias para {} de {} reportes", coincidencias.size(), reportes.size());
+        } catch (IaNoDisponibleException e) {
+            // La IA no respondió (saturada, límite gratuito, etc.): usamos el respaldo por palabras clave
+            log.warn("IA no disponible ({}). Usando coincidencias por palabras clave.", e.getMessage());
+            coincidencias = localService.analizar(reportes, objetos);
+            aviso = e.getMessage() + " Se muestran coincidencias por palabras clave (sin IA).";
+        }
 
         List<CoincidenciaDTO> resultado = new ArrayList<>();
         coincidencias.forEach((reporteId, idsObjetos) -> {
@@ -155,7 +167,7 @@ public class CoincidenciaController {
             }
         });
 
-        return resultado;
+        return aviso == null ? ApiResponse.ok(resultado) : ApiResponse.ok(aviso, resultado);
     }
 
     private String nvl(String s) {
