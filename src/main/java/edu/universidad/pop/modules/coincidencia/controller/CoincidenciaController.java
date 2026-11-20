@@ -1,6 +1,5 @@
 package edu.universidad.pop.modules.coincidencia.controller;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.universidad.pop.common.dto.ApiResponse;
 import edu.universidad.pop.modules.coincidencia.dto.CoincidenciaDTO;
@@ -96,62 +95,67 @@ public class CoincidenciaController {
         Map<Long, Objeto> mapaObjetos = objetos.stream()
                 .collect(Collectors.toMap(Objeto::getId, o -> o));
 
-        // JSON de objetos para la IA
-        StringBuilder jsonObjetos = new StringBuilder("[");
-        for (Objeto o : objetos) {
-            jsonObjetos.append(String.format(
-                    "{\"id\":%d,\"titulo\":\"%s\",\"descripcion\":\"%s\",\"categoria\":\"%s\",\"ubicacion\":\"%s\"},",
-                    o.getId(),
-                    escape(o.getTitulo()),
-                    escape(o.getDescripcion()),
-                    o.getCategoria().name(),
-                    escape(o.getUbicacion())
-            ));
+        Map<Long, ReportePerdida> mapaReportes = reportes.stream()
+                .collect(Collectors.toMap(ReportePerdida::getId, r -> r));
+
+        // JSON para la IA (Jackson se encarga de escapar comillas y saltos de línea)
+        List<Map<String, Object>> objetosIa = objetos.stream()
+                .map(o -> Map.<String, Object>of(
+                        "id", o.getId(),
+                        "titulo", nvl(o.getTitulo()),
+                        "descripcion", nvl(o.getDescripcion()),
+                        "categoria", o.getCategoria().name(),
+                        "ubicacion", nvl(o.getUbicacion())))
+                .collect(Collectors.toList());
+        List<Map<String, Object>> reportesIa = reportes.stream()
+                .map(r -> Map.<String, Object>of(
+                        "reporteId", r.getId(),
+                        "descripcion", nvl(r.getDescripcion()),
+                        "categoria", r.getCategoria().name(),
+                        "ultimaUbicacion", nvl(r.getUltimaUbicacion())))
+                .collect(Collectors.toList());
+
+        String objetosJson;
+        String reportesJson;
+        try {
+            objetosJson = objectMapper.writeValueAsString(objetosIa);
+            reportesJson = objectMapper.writeValueAsString(reportesIa);
+        } catch (Exception e) {
+            throw new IllegalStateException("No se pudo serializar los datos para la IA", e);
         }
-        // Elimina la última coma y cierra el array
-        String objetosJson = jsonObjetos.substring(0, jsonObjetos.length() - 1) + "]";
+
+        // Una sola llamada a Gemini para todos los reportes
+        Map<Long, List<Long>> coincidencias = iaService.analizarCoincidencias(reportesJson, objetosJson);
+        log.info("IA devolvió coincidencias para {} de {} reportes", coincidencias.size(), reportes.size());
 
         List<CoincidenciaDTO> resultado = new ArrayList<>();
-
-        for (ReportePerdida reporte : reportes) {
-            String descripcionReporte = reporte.getDescripcion()
-                    + " Categoría: " + reporte.getCategoria().name()
-                    + " Última ubicación: " + reporte.getUltimaUbicacion();
-
-            String respuestaIA = iaService.analizarCoincidencias(descripcionReporte, objetosJson);
-
-            try {
-                List<Long> idsCoincidentes = objectMapper.readValue(
-                        respuestaIA, new TypeReference<List<Long>>() {});
-
-                for (Long idObjeto : idsCoincidentes) {
-                    Objeto obj = mapaObjetos.get(idObjeto);
-                    if (obj != null) {
-                        resultado.add(new CoincidenciaDTO(
-                                reporte.getId(),
-                                reporte.getDescripcion(),
-                                reporte.getCategoria().name(),
-                                reporte.getUltimaUbicacion(),
-                                reporte.getUsuarioReporta().getNombre(),
-                                reporte.getUsuarioReporta().getCorreoInstitucional(),
-                                obj.getId(),
-                                obj.getTitulo(),
-                                obj.getDescripcion(),
-                                obj.getCategoria().name(),
-                                obj.getUbicacion()
-                        ));
-                    }
-                }
-            } catch (Exception e) {
-                log.warn("Respuesta IA inválida para reporte {}: {}", reporte.getId(), respuestaIA);
+        coincidencias.forEach((reporteId, idsObjetos) -> {
+            ReportePerdida reporte = mapaReportes.get(reporteId);
+            if (reporte == null) return; // la IA inventó un ID: se ignora
+            for (Long idObjeto : idsObjetos) {
+                Objeto obj = mapaObjetos.get(idObjeto);
+                if (obj == null) continue;
+                resultado.add(new CoincidenciaDTO(
+                        reporte.getId(),
+                        reporte.getDescripcion(),
+                        reporte.getCategoria().name(),
+                        reporte.getUltimaUbicacion(),
+                        reporte.getUsuarioReporta().getNombre(),
+                        reporte.getUsuarioReporta().getCorreoInstitucional(),
+                        obj.getId(),
+                        obj.getTitulo(),
+                        obj.getDescripcion(),
+                        obj.getCategoria().name(),
+                        obj.getUbicacion()
+                ));
             }
-        }
+        });
 
         return resultado;
     }
 
-    private String escape(String s) {
-        if (s == null) return "";
-        return s.replace("\"", "'").replace("\n", " ").replace("\r", "");
+    private String nvl(String s) {
+        return s == null ? "" : s;
     }
+
 }
