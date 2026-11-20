@@ -11,7 +11,7 @@ import edu.universidad.pop.modules.reporte.domain.ReportePerdida;
 import edu.universidad.pop.modules.reporte.repository.ReportePerdidaRepository;
 import edu.universidad.pop.modules.usuario.domain.Usuario;
 import edu.universidad.pop.modules.usuario.repository.UsuarioRepository;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/coincidencias")
 @RequiredArgsConstructor
+@Slf4j
 public class CoincidenciaController {
 
     private final IaMatchingService iaService;
@@ -41,6 +42,8 @@ public class CoincidenciaController {
     @PreAuthorize("hasRole('ESTUDIANTE')")
     public ResponseEntity<ApiResponse<List<CoincidenciaDTO>>> coincidenciasMisReportes(
             Authentication authentication) {
+        log.info("=== /coincidencias/mis-reportes llamado por: {} con roles: {}",
+                authentication.getName(), authentication.getAuthorities());
 
         String correo = authentication.getName();
         Usuario usuario = usuarioRepository.findByCorreoInstitucional(correo)
@@ -66,6 +69,7 @@ public class CoincidenciaController {
     @GetMapping("/todos")
     @PreAuthorize("hasAnyRole('ADMINISTRADOR', 'ENCARGADO_OBJETOS_PERDIDOS')")
     public ResponseEntity<ApiResponse<List<CoincidenciaDTO>>> coincidenciasTodos() {
+        log.info("=== /coincidencias/todos llamado");
 
         List<ReportePerdida> reportes = reporteRepository.findAll().stream()
                 .filter(r -> r.getEstado().name().equals("ACTIVO") || r.getEstado().name().equals("POSIBLE_COINCIDENCIA"))
