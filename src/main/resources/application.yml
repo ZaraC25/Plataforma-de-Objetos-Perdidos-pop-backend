@@ -76,3 +76,7 @@ logging:
   level:
     edu.universidad.pop: DEBUG
     org.springframework.security: DEBUG
+
+gemini:
+  api:
+    key: ${GEMINI_API_KEY:}
