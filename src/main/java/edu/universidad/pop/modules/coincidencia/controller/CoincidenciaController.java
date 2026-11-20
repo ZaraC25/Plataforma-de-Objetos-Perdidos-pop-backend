@@ -3,6 +3,7 @@ package edu.universidad.pop.modules.coincidencia.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.universidad.pop.common.dto.ApiResponse;
 import edu.universidad.pop.modules.coincidencia.dto.CoincidenciaDTO;
+import edu.universidad.pop.modules.coincidencia.service.ClaudeMatchingService;
 import edu.universidad.pop.modules.coincidencia.service.IaMatchingService;
 import edu.universidad.pop.modules.objeto.domain.Objeto;
 import edu.universidad.pop.modules.objeto.repository.ObjetoRepository;
@@ -29,6 +30,7 @@ import java.util.stream.Collectors;
 public class CoincidenciaController {
 
     private final IaMatchingService iaService;
+    private final ClaudeMatchingService claudeService;
     private final ObjetoRepository objetoRepository;
     private final ReportePerdidaRepository reporteRepository;
     private final UsuarioRepository usuarioRepository;
@@ -124,8 +126,10 @@ public class CoincidenciaController {
             throw new IllegalStateException("No se pudo serializar los datos para la IA", e);
         }
 
-        // Una sola llamada a Gemini para todos los reportes
-        Map<Long, List<Long>> coincidencias = iaService.analizarCoincidencias(reportesJson, objetosJson);
+        // Una sola llamada a la IA para todos los reportes: Claude si ANTHROPIC_API_KEY está configurada, si no Gemini
+        Map<Long, List<Long>> coincidencias = claudeService.estaConfigurado()
+                ? claudeService.analizarCoincidencias(reportesJson, objetosJson)
+                : iaService.analizarCoincidencias(reportesJson, objetosJson);
         log.info("IA devolvió coincidencias para {} de {} reportes", coincidencias.size(), reportes.size());
 
         List<CoincidenciaDTO> resultado = new ArrayList<>();
