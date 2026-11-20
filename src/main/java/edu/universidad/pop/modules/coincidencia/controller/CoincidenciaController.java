@@ -72,7 +72,7 @@ public class CoincidenciaController {
     public ResponseEntity<ApiResponse<List<CoincidenciaDTO>>> coincidenciasTodos() {
         log.info("=== /coincidencias/todos llamado");
 
-        List<ReportePerdida> reportes = reporteRepository.findAll().stream()
+        List<ReportePerdida> reportes = reporteRepository.findAllConUsuario().stream()
                 .filter(r -> r.getEstado().name().equals("ACTIVO") || r.getEstado().name().equals("POSIBLE_COINCIDENCIA"))
                 .collect(Collectors.toList());
 

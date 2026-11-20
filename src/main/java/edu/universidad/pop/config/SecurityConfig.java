@@ -2,6 +2,7 @@ package edu.universidad.pop.config;
 
 import edu.universidad.pop.modules.auth.security.UsuarioPrincipal;
 import edu.universidad.pop.modules.usuario.repository.UsuarioRepository;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -45,6 +46,13 @@ public class SecurityConfig {
                 .requestMatchers("/api/encargado/**").hasAnyRole("ENCARGADO_OBJETOS_PERDIDOS", "ADMINISTRADOR")
                 .anyRequest().authenticated()
             )
+            // Sin token o token expirado -> 401 (no 403), para que el frontend sepa que debe iniciar sesión de nuevo
+            .exceptionHandling(ex -> ex.authenticationEntryPoint((request, response, authException) -> {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.setContentType("application/json;charset=UTF-8");
+                response.getWriter().write(
+                        "{\"success\":false,\"message\":\"Tu sesión expiró. Inicia sesión nuevamente.\"}");
+            }))
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
