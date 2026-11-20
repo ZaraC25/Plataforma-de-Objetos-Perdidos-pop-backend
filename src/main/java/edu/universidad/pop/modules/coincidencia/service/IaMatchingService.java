@@ -12,9 +12,12 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -23,9 +26,15 @@ public class IaMatchingService {
     @Value("${gemini.api.key:}")
     private String apiKey;
 
-    /** Modelo configurable: gemini-1.5-flash fue retirado por Google y responde 404. */
-    @Value("${gemini.api.model:gemini-2.5-flash}")
+    /**
+     * Modelo preferido (configurable con GEMINI_MODEL). Google retira modelos con el tiempo;
+     * si este responde 404 se elige automáticamente otro disponible para la API key.
+     */
+    @Value("${gemini.api.model:gemini-flash-latest}")
     private String model;
+
+    /** Modelo descubierto automáticamente tras un 404 (se reutiliza en las siguientes peticiones). */
+    private volatile String modeloActivo;
 
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -56,34 +65,110 @@ public class IaMatchingService {
                 + "[{\"reporteId\": 1, \"objetos\": [3, 7]}]. Ordena los objetos del más al menos probable. "
                 + "Omite los reportes sin coincidencias. Si no hay ninguna coincidencia responde [].";
 
+        ObjectNode requestBody = mapper.createObjectNode();
+        ObjectNode content = requestBody.putArray("contents").addObject();
+        content.put("role", "user");
+        content.putArray("parts").addObject().put("text", prompt);
+        requestBody.putObject("generationConfig")
+                .put("responseMimeType", "application/json")
+                .put("temperature", 0.1);
+
+        String modelo = modeloActivo != null ? modeloActivo : model;
         String response;
         try {
-            ObjectNode requestBody = mapper.createObjectNode();
-            ObjectNode content = requestBody.putArray("contents").addObject();
-            content.put("role", "user");
-            content.putArray("parts").addObject().put("text", prompt);
-            requestBody.putObject("generationConfig")
-                    .put("responseMimeType", "application/json")
-                    .put("temperature", 0.1);
-
-            response = webClient.post()
-                    .uri("/models/{model}:generateContent", model)
-                    .header("x-goog-api-key", apiKey)
-                    .header("Content-Type", "application/json")
-                    .bodyValue(requestBody.toString())
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block(Duration.ofSeconds(60));
+            response = generar(modelo, requestBody.toString());
         } catch (WebClientResponseException e) {
-            log.error("Gemini respondió {} con el modelo '{}': {}",
-                    e.getStatusCode(), model, e.getResponseBodyAsString());
-            throw new IaNoDisponibleException(mensajeParaUsuario(e));
+            if (e.getStatusCode().value() != 404) {
+                throw errorGemini(e, modelo);
+            }
+            // El modelo fue retirado: preguntamos a Google cuáles hay y usamos uno disponible
+            log.warn("El modelo '{}' no está disponible (404). Buscando otro modelo...", modelo);
+            String alterno = descubrirModelo(modelo);
+            try {
+                response = generar(alterno, requestBody.toString());
+                modeloActivo = alterno; // se recuerda para las siguientes peticiones
+                log.info("Usando el modelo de Gemini '{}'", alterno);
+            } catch (WebClientResponseException e2) {
+                throw errorGemini(e2, alterno);
+            } catch (Exception e2) {
+                log.error("Error llamando a Gemini con el modelo '{}'", alterno, e2);
+                throw new IaNoDisponibleException("No se pudo contactar el servicio de IA. Intenta de nuevo.");
+            }
         } catch (Exception e) {
-            log.error("Error llamando a Gemini con el modelo '{}'", model, e);
+            log.error("Error llamando a Gemini con el modelo '{}'", modelo, e);
             throw new IaNoDisponibleException("No se pudo contactar el servicio de IA. Intenta de nuevo.");
         }
 
         return parsearRespuesta(response);
+    }
+
+    private String generar(String modelo, String body) {
+        return webClient.post()
+                .uri("/models/{model}:generateContent", modelo)
+                .header("x-goog-api-key", apiKey)
+                .header("Content-Type", "application/json")
+                .bodyValue(body)
+                .retrieve()
+                .bodyToMono(String.class)
+                .block(Duration.ofSeconds(60));
+    }
+
+    private IaNoDisponibleException errorGemini(WebClientResponseException e, String modelo) {
+        log.error("Gemini respondió {} con el modelo '{}': {}",
+                e.getStatusCode(), modelo, e.getResponseBodyAsString());
+        return new IaNoDisponibleException(mensajeParaUsuario(e, modelo));
+    }
+
+    /**
+     * Consulta la lista de modelos que la API key puede usar y elige el mejor "flash"
+     * de texto: prefiere estables sobre preview/experimental, no-lite y la versión más alta.
+     */
+    private String descubrirModelo(String descartado) {
+        List<String> candidatos = new ArrayList<>();
+        try {
+            String lista = webClient.get()
+                    .uri(u -> u.path("/models").queryParam("pageSize", 1000).build())
+                    .header("x-goog-api-key", apiKey)
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block(Duration.ofSeconds(20));
+            for (JsonNode m : mapper.readTree(lista).path("models")) {
+                boolean generaTexto = false;
+                for (JsonNode metodo : m.path("supportedGenerationMethods")) {
+                    if ("generateContent".equals(metodo.asText())) generaTexto = true;
+                }
+                String nombre = m.path("name").asText("").replaceFirst("^models/", "");
+                if (generaTexto && nombre.startsWith("gemini") && nombre.contains("flash")
+                        && !nombre.equals(descartado)
+                        && !nombre.matches(".*(image|tts|audio|live|embedding|vision|thinking).*")) {
+                    candidatos.add(nombre);
+                }
+            }
+        } catch (Exception e) {
+            log.error("No se pudo obtener la lista de modelos de Gemini", e);
+            throw new IaNoDisponibleException("El modelo de IA '" + descartado
+                    + "' no está disponible y no se pudo consultar la lista de modelos.");
+        }
+        log.info("Modelos flash disponibles para esta API key: {}", candidatos);
+        if (candidatos.isEmpty()) {
+            throw new IaNoDisponibleException("La API key no tiene acceso a ningún modelo Gemini Flash. "
+                    + "Configura uno en GEMINI_MODEL.");
+        }
+        candidatos.sort(Comparator.comparingInt(IaMatchingService::puntaje).reversed());
+        return candidatos.get(0);
+    }
+
+    private static int puntaje(String nombre) {
+        int p = 0;
+        if (nombre.equals("gemini-flash-latest")) p += 100_000;
+        if (!nombre.matches(".*(preview|exp).*")) p += 10_000;
+        if (!nombre.contains("lite")) p += 5_000;
+        Matcher v = Pattern.compile("gemini-(\\d+)(?:\\.(\\d+))?").matcher(nombre);
+        if (v.find()) {
+            p += Integer.parseInt(v.group(1)) * 100 + (v.group(2) != null ? Integer.parseInt(v.group(2)) * 10 : 0);
+        }
+        if (!nombre.matches(".*-\\d{3,}$")) p += 1; // prefiere el alias sin sufijo de fecha
+        return p;
     }
 
     private Map<Long, List<Long>> parsearRespuesta(String response) {
@@ -120,7 +205,7 @@ public class IaMatchingService {
         }
     }
 
-    private String mensajeParaUsuario(WebClientResponseException e) {
+    private String mensajeParaUsuario(WebClientResponseException e, String model) {
         String cuerpo = e.getResponseBodyAsString();
         return switch (e.getStatusCode().value()) {
             case 400 -> cuerpo.contains("API_KEY_INVALID") || cuerpo.contains("API key not valid")
