@@ -46,8 +46,7 @@ public class CoincidenciaController {
         Usuario usuario = usuarioRepository.findByCorreoInstitucional(correo)
                 .orElseThrow();
 
-        List<ReportePerdida> misReportes = reporteRepository.findAll().stream()
-                .filter(r -> r.getUsuarioReporta().getId().equals(usuario.getId()))
+        List<ReportePerdida> misReportes = reporteRepository.findByUsuarioReporta_Id(usuario.getId()).stream()
                 .filter(r -> r.getEstado().name().equals("ACTIVO") || r.getEstado().name().equals("POSIBLE_COINCIDENCIA"))
                 .collect(Collectors.toList());
 
