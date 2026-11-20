@@ -143,7 +143,7 @@ public class CoincidenciaController {
                     }
                 }
             } catch (Exception e) {
-                // Si la IA no devuelve JSON válido, ignoramos este reporte
+                log.warn("Respuesta IA inválida para reporte {}: {}", reporte.getId(), respuestaIA);
             }
         }
 
